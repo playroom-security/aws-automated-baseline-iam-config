@@ -1,0 +1,183 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  AWS Baseline IAM - Custom Managed Policies
+  Creates reusable customer-managed IAM policies that are attached to groups
+  and roles throughout the baseline.
+ 
+  Policies created:
+    - EnforceMFA            : Denies all API calls unless MFA is active.
+    - DenyRootActions       : Denies actions that should never be taken as root.
+    - DenyUnencryptedS3     : Denies S3 uploads without server-side encryption.
+    - RequireSecureTransport: Denies any API call made without HTTPS/TLS.
+ 
+Resources:
+ 
+  # ── 1. Enforce MFA ─────────────────────────────────────────────────────────
+  # Allows users to manage their own credentials and MFA device, then denies
+  # everything else if MFA has not been authenticated this session.
+  # Attach this policy to every human-user IAM group.
+  EnforceMFAPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: EnforceMFA
+      Description: >
+        Denies all AWS API calls unless the caller authenticated with MFA this
+        session. Exempt actions cover the minimum set needed to enrol an MFA
+        device and change a temporary password on first login.
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+ 
+          # Allow users to view basic account info
+          - Sid: AllowViewAccountInfo
+            Effect: Allow
+            Action:
+              - iam:GetAccountPasswordPolicy
+              - iam:ListVirtualMFADevices
+            Resource: '*'
+ 
+          # Allow users to manage their own password
+          - Sid: AllowManageOwnPassword
+            Effect: Allow
+            Action:
+              - iam:ChangePassword
+              - iam:GetUser
+            Resource: !Sub 'arn:aws:iam::${AWS::AccountId}:user/${!aws:username}'
+ 
+          # Allow users to manage their own access keys
+          - Sid: AllowManageOwnAccessKeys
+            Effect: Allow
+            Action:
+              - iam:CreateAccessKey
+              - iam:DeleteAccessKey
+              - iam:ListAccessKeys
+              - iam:UpdateAccessKey
+            Resource: !Sub 'arn:aws:iam::${AWS::AccountId}:user/${!aws:username}'
+ 
+          # Allow users to manage their own MFA device
+          - Sid: AllowManageOwnVirtualMFADevice
+            Effect: Allow
+            Action:
+              - iam:CreateVirtualMFADevice
+            Resource: !Sub 'arn:aws:iam::${AWS::AccountId}:mfa/*'
+ 
+          - Sid: AllowManageOwnUserMFA
+            Effect: Allow
+            Action:
+              - iam:DeactivateMFADevice
+              - iam:EnableMFADevice
+              - iam:GetUser
+              - iam:GetMFADevice
+              - iam:ListMFADevices
+              - iam:ResyncMFADevice
+            Resource: !Sub 'arn:aws:iam::${AWS::AccountId}:user/${!aws:username}'
+ 
+          # Deny everything else if the session has no MFA token
+          - Sid: DenyAllIfNoMFA
+            Effect: Deny
+            NotAction:
+              - iam:CreateVirtualMFADevice
+              - iam:EnableMFADevice
+              - iam:GetUser
+              - iam:GetMFADevice
+              - iam:ListMFADevices
+              - iam:ListVirtualMFADevices
+              - iam:ResyncMFADevice
+              - sts:GetSessionToken
+            Resource: '*'
+            Condition:
+              BoolIfExists:
+                'aws:MultiFactorAuthPresent': 'false'
+ 
+  # ── 2. Deny Root Actions ───────────────────────────────────────────────────
+  # Preventative control: service control policy equivalent for IAM principals.
+  # Attach to all groups so that even if credentials are stolen the blast radius
+  # is reduced. (A true SCP in AWS Organizations is preferred when available.)
+  DenyRootActionsPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: DenyRootActions
+      Description: >
+        Explicitly denies high-risk actions that should only ever be performed
+        via the root account and only in exceptional circumstances.
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyRootAccountActions
+            Effect: Deny
+            Action:
+              - iam:CreateVirtualMFADevice
+              - iam:DeleteVirtualMFADevice
+              - iam:CreateAccountAlias
+              - iam:DeleteAccountAlias
+              - iam:UpdateAccountPasswordPolicy
+              - iam:DeleteAccountPasswordPolicy
+              - aws-portal:ModifyBilling
+              - aws-portal:ModifyPaymentMethods
+            Resource: '*'
+            Condition:
+              StringLike:
+                'aws:PrincipalArn': 'arn:aws:iam::*:root'
+ 
+  # ── 3. Deny Unencrypted S3 Uploads ─────────────────────────────────────────
+  DenyUnencryptedS3Policy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: DenyUnencryptedS3Uploads
+      Description: >
+        Denies s3:PutObject calls that do not include a server-side encryption
+        header (SSE-S3, SSE-KMS, or SSE-C).
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyUnencryptedObjectUploads
+            Effect: Deny
+            Action: s3:PutObject
+            Resource: 'arn:aws:s3:::*/*'
+            Condition:
+              'Null':
+                's3:x-amz-server-side-encryption': 'true'
+ 
+  # ── 4. Require Secure Transport (HTTPS) ────────────────────────────────────
+  RequireSecureTransportPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: RequireSecureTransport
+      Description: >
+        Denies any AWS API request made over plain HTTP (non-TLS) to enforce
+        encryption in transit for all service calls.
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyNonTLSRequests
+            Effect: Deny
+            Action: '*'
+            Resource: '*'
+            Condition:
+              Bool:
+                'aws:SecureTransport': 'false'
+ 
+Outputs:
+  EnforceMFAPolicyArn:
+    Description: ARN of the EnforceMFA managed policy
+    Value: !Ref EnforceMFAPolicy
+    Export:
+      Name: !Sub '${AWS::StackName}-EnforceMFAPolicyArn'
+ 
+  DenyRootActionsPolicyArn:
+    Description: ARN of the DenyRootActions managed policy
+    Value: !Ref DenyRootActionsPolicy
+    Export:
+      Name: !Sub '${AWS::StackName}-DenyRootActionsPolicyArn'
+ 
+  DenyUnencryptedS3PolicyArn:
+    Description: ARN of the DenyUnencryptedS3Uploads managed policy
+    Value: !Ref DenyUnencryptedS3Policy
+    Export:
+      Name: !Sub '${AWS::StackName}-DenyUnencryptedS3PolicyArn'
+ 
+  RequireSecureTransportPolicyArn:
+    Description: ARN of the RequireSecureTransport managed policy
+    Value: !Ref RequireSecureTransportPolicy
+    Export:
+      Name: !Sub '${AWS::StackName}-RequireSecureTransportPolicyArn'

@@ -1,0 +1,186 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  AWS Baseline IAM Configuration - Master Stack
+  Orchestrates nested stacks to enforce IAM best practices across an AWS account,
+  including password policy, managed policies, groups, and cross-account roles.
+ 
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Template Storage
+        Parameters:
+          - TemplateBucketName
+          - TemplateBucketPrefix
+      - Label:
+          default: Cross-Account Configuration
+        Parameters:
+          - TrustedAccountId
+          - ExternalId
+      - Label:
+          default: Password Policy
+        Parameters:
+          - PasswordMinLength
+          - MaxPasswordAge
+          - PasswordReusePrevention
+    ParameterLabels:
+      TemplateBucketName:
+        default: S3 Bucket Name (nested templates)
+      TrustedAccountId:
+        default: Trusted AWS Account ID (cross-account access)
+ 
+Parameters:
+  # ── Template Storage ───────────────────────────────────────────────────────
+  TemplateBucketName:
+    Type: String
+    Description: S3 bucket that hosts the nested CloudFormation templates.
+ 
+  TemplateBucketPrefix:
+    Type: String
+    Default: cloudformation/templates
+    Description: Key prefix (path) within the S3 bucket where templates are stored.
+ 
+  # ── Cross-Account ──────────────────────────────────────────────────────────
+  TrustedAccountId:
+    Type: String
+    Description: >
+      AWS Account ID that is permitted to assume the cross-account IAM roles
+      created by this stack (e.g. a central identity / management account).
+    AllowedPattern: '^\d{12}$'
+    ConstraintDescription: Must be a 12-digit AWS account ID.
+ 
+  ExternalId:
+    Type: String
+    NoEcho: true
+    Description: >
+      Shared secret used as an External ID in cross-account role trust policies
+      to prevent confused-deputy attacks.
+    MinLength: 8
+    MaxLength: 64
+ 
+  # ── Password Policy ────────────────────────────────────────────────────────
+  PasswordMinLength:
+    Type: Number
+    Default: 14
+    MinValue: 8
+    MaxValue: 128
+    Description: Minimum number of characters required in an IAM user password.
+ 
+  MaxPasswordAge:
+    Type: Number
+    Default: 90
+    MinValue: 1
+    MaxValue: 1095
+    Description: Number of days before an IAM user password expires.
+ 
+  PasswordReusePrevention:
+    Type: Number
+    Default: 24
+    MinValue: 1
+    MaxValue: 24
+    Description: Number of previous passwords that IAM users cannot reuse.
+ 
+# ── Nested Stacks ────────────────────────────────────────────────────────────
+Resources:
+ 
+  # 1. Account Password Policy
+  PasswordPolicyStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub
+        - 'https://${Bucket}.s3.${AWS::URLSuffix}/${Prefix}/account-password-policy.yaml'
+        - Bucket: !Ref TemplateBucketName
+          Prefix: !Ref TemplateBucketPrefix
+      Parameters:
+        MinimumPasswordLength: !Ref PasswordMinLength
+        MaxPasswordAge:        !Ref MaxPasswordAge
+        PasswordReusePrevention: !Ref PasswordReusePrevention
+      Tags:
+        - Key: ManagedBy
+          Value: CloudFormation
+        - Key: Stack
+          Value: !Ref AWS::StackName
+ 
+  # 2. Custom Managed Policies (MFA enforcement, deny-root, etc.)
+  ManagedPoliciesStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub
+        - 'https://${Bucket}.s3.${AWS::URLSuffix}/${Prefix}/iam-managed-policies.yaml'
+        - Bucket: !Ref TemplateBucketName
+          Prefix: !Ref TemplateBucketPrefix
+      Tags:
+        - Key: ManagedBy
+          Value: CloudFormation
+        - Key: Stack
+          Value: !Ref AWS::StackName
+ 
+  # 3. IAM Groups  (depends on managed policies being created first)
+  GroupsStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: ManagedPoliciesStack
+    Properties:
+      TemplateURL: !Sub
+        - 'https://${Bucket}.s3.${AWS::URLSuffix}/${Prefix}/iam-groups.yaml'
+        - Bucket: !Ref TemplateBucketName
+          Prefix: !Ref TemplateBucketPrefix
+      Parameters:
+        EnforceMFAPolicyArn:    !GetAtt ManagedPoliciesStack.Outputs.EnforceMFAPolicyArn
+        DenyRootActionsPolicyArn: !GetAtt ManagedPoliciesStack.Outputs.DenyRootActionsPolicyArn
+      Tags:
+        - Key: ManagedBy
+          Value: CloudFormation
+        - Key: Stack
+          Value: !Ref AWS::StackName
+ 
+  # 4. Cross-Account Roles
+  CrossAccountRolesStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: ManagedPoliciesStack
+    Properties:
+      TemplateURL: !Sub
+        - 'https://${Bucket}.s3.${AWS::URLSuffix}/${Prefix}/iam-cross-account-roles.yaml'
+        - Bucket: !Ref TemplateBucketName
+          Prefix: !Ref TemplateBucketPrefix
+      Parameters:
+        TrustedAccountId: !Ref TrustedAccountId
+        ExternalId:       !Ref ExternalId
+        EnforceMFAPolicyArn: !GetAtt ManagedPoliciesStack.Outputs.EnforceMFAPolicyArn
+      Tags:
+        - Key: ManagedBy
+          Value: CloudFormation
+        - Key: Stack
+          Value: !Ref AWS::StackName
+ 
+# ── Outputs ──────────────────────────────────────────────────────────────────
+Outputs:
+  AdminGroupArn:
+    Description: ARN of the Administrators IAM Group
+    Value: !GetAtt GroupsStack.Outputs.AdminGroupArn
+    Export:
+      Name: !Sub '${AWS::StackName}-AdminGroupArn'
+ 
+  DeveloperGroupArn:
+    Description: ARN of the Developers IAM Group
+    Value: !GetAtt GroupsStack.Outputs.DeveloperGroupArn
+    Export:
+      Name: !Sub '${AWS::StackName}-DeveloperGroupArn'
+ 
+  ReadOnlyGroupArn:
+    Description: ARN of the ReadOnly IAM Group
+    Value: !GetAtt GroupsStack.Outputs.ReadOnlyGroupArn
+    Export:
+      Name: !Sub '${AWS::StackName}-ReadOnlyGroupArn'
+ 
+  CrossAccountAdminRoleArn:
+    Description: ARN of the cross-account Administrator role
+    Value: !GetAtt CrossAccountRolesStack.Outputs.CrossAccountAdminRoleArn
+    Export:
+      Name: !Sub '${AWS::StackName}-CrossAccountAdminRoleArn'
+ 
+  CrossAccountReadOnlyRoleArn:
+    Description: ARN of the cross-account ReadOnly role
+    Value: !GetAtt CrossAccountRolesStack.Outputs.CrossAccountReadOnlyRoleArn
+    Export:
+      Name: !Sub '${AWS::StackName}-CrossAccountReadOnlyRoleArn'
+

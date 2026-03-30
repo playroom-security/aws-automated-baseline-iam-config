@@ -1,0 +1,210 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  AWS Baseline IAM - Cross-Account Roles
+  Creates IAM roles that allow a trusted AWS account (e.g. a central identity
+  or management account) to assume roles in this account.
+ 
+  Best-practice controls applied to every role:
+    - ExternalId in trust policy  (prevents confused-deputy attacks)
+    - MFA required on assume      (humans must have active MFA)
+    - Maximum session duration     set to 1 hour
+    - Condition on source account  (only the explicitly-trusted account may call sts:AssumeRole)
+ 
+  Roles created:
+    - CrossAccountAdminRole      : AdministratorAccess  (break-glass only)
+    - CrossAccountDeveloperRole  : Developer-equivalent access
+    - CrossAccountReadOnlyRole   : ReadOnlyAccess
+ 
+Parameters:
+  TrustedAccountId:
+    Type: String
+    Description: AWS Account ID allowed to assume these roles.
+    AllowedPattern: '^\d{12}$'
+    ConstraintDescription: Must be a 12-digit AWS account ID.
+ 
+  ExternalId:
+    Type: String
+    NoEcho: true
+    Description: >
+      Shared secret used as the External ID in trust policies.
+      Must be pre-agreed with the trusted account's administrators.
+    MinLength: 8
+    MaxLength: 64
+ 
+  EnforceMFAPolicyArn:
+    Type: String
+    Description: ARN of the EnforceMFA customer-managed policy.
+ 
+  MaxSessionDurationSeconds:
+    Type: Number
+    Default: 3600
+    MinValue: 900
+    MaxValue: 43200
+    Description: Maximum session duration (seconds) for role sessions. Default 1 hour.
+ 
+Resources:
+ 
+  # ── Shared trust-policy condition ────────────────────────────────────────
+  # All roles share the same trust policy structure:
+  #   • Principal  : root of the trusted account (IAM users/roles in that
+  #                  account can then be granted sts:AssumeRole by their admin)
+  #   • Condition  : ExternalId + MFA required
+ 
+  # ── 1. Cross-Account Administrator Role ──────────────────────────────────
+  CrossAccountAdminRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: CrossAccountAdminRole
+      Description: >
+        Grants AdministratorAccess to principals in the trusted account.
+        Reserved for break-glass / emergency scenarios.
+      MaxSessionDuration: !Ref MaxSessionDurationSeconds
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowTrustedAccountWithMFA
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${TrustedAccountId}:root'
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                'sts:ExternalId': !Ref ExternalId
+              Bool:
+                'aws:MultiFactorAuthPresent': 'true'
+              NumericLessThan:
+                'aws:MultiFactorAuthAge': '3600'  # MFA token < 1 hour old
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AdministratorAccess
+        - !Ref EnforceMFAPolicyArn
+      Tags:
+        - Key: Purpose
+          Value: CrossAccountBreakGlass
+        - Key: TrustedAccount
+          Value: !Ref TrustedAccountId
+ 
+  # ── 2. Cross-Account Developer Role ──────────────────────────────────────
+  CrossAccountDeveloperRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: CrossAccountDeveloperRole
+      Description: >
+        Grants developer-level access (PowerUser minus IAM escalation) to
+        principals in the trusted account.
+      MaxSessionDuration: !Ref MaxSessionDurationSeconds
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowTrustedAccountWithMFA
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${TrustedAccountId}:root'
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                'sts:ExternalId': !Ref ExternalId
+              Bool:
+                'aws:MultiFactorAuthPresent': 'true'
+              NumericLessThan:
+                'aws:MultiFactorAuthAge': '3600'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/PowerUserAccess
+        - !Ref EnforceMFAPolicyArn
+      Policies:
+        - PolicyName: DenyIAMEscalation
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: DenyIAMWrite
+                Effect: Deny
+                Action:
+                  - iam:AttachGroupPolicy
+                  - iam:AttachRolePolicy
+                  - iam:AttachUserPolicy
+                  - iam:CreateGroup
+                  - iam:CreatePolicy
+                  - iam:CreatePolicyVersion
+                  - iam:CreateRole
+                  - iam:CreateUser
+                  - iam:DeleteGroup
+                  - iam:DeletePolicy
+                  - iam:DeletePolicyVersion
+                  - iam:DeleteRole
+                  - iam:DeleteUser
+                  - iam:DetachGroupPolicy
+                  - iam:DetachRolePolicy
+                  - iam:DetachUserPolicy
+                  - iam:PutGroupPolicy
+                  - iam:PutRolePolicy
+                  - iam:PutUserPolicy
+                  - iam:UpdateAssumeRolePolicy
+                Resource: '*'
+      Tags:
+        - Key: Purpose
+          Value: CrossAccountDeveloper
+        - Key: TrustedAccount
+          Value: !Ref TrustedAccountId
+ 
+  # ── 3. Cross-Account Read-Only Role ──────────────────────────────────────
+  CrossAccountReadOnlyRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: CrossAccountReadOnlyRole
+      Description: >
+        Grants read-only access to all services for principals in the trusted
+        account. Suitable for audits, monitoring, and support.
+      MaxSessionDuration: !Ref MaxSessionDurationSeconds
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowTrustedAccountWithMFA
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${TrustedAccountId}:root'
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                'sts:ExternalId': !Ref ExternalId
+              Bool:
+                'aws:MultiFactorAuthPresent': 'true'
+              NumericLessThan:
+                'aws:MultiFactorAuthAge': '3600'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/ReadOnlyAccess
+        - !Ref EnforceMFAPolicyArn
+      Tags:
+        - Key: Purpose
+          Value: CrossAccountReadOnly
+        - Key: TrustedAccount
+          Value: !Ref TrustedAccountId
+ 
+Outputs:
+  CrossAccountAdminRoleArn:
+    Description: ARN of the CrossAccountAdminRole
+    Value: !GetAtt CrossAccountAdminRole.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-CrossAccountAdminRoleArn'
+ 
+  CrossAccountAdminRoleName:
+    Description: Name of the CrossAccountAdminRole
+    Value: !Ref CrossAccountAdminRole
+ 
+  CrossAccountDeveloperRoleArn:
+    Description: ARN of the CrossAccountDeveloperRole
+    Value: !GetAtt CrossAccountDeveloperRole.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-CrossAccountDeveloperRoleArn'
+ 
+  CrossAccountDeveloperRoleName:
+    Description: Name of the CrossAccountDeveloperRole
+    Value: !Ref CrossAccountDeveloperRole
+ 
+  CrossAccountReadOnlyRoleArn:
+    Description: ARN of the CrossAccountReadOnlyRole
+    Value: !GetAtt CrossAccountReadOnlyRole.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-CrossAccountReadOnlyRoleArn'
+ 
+  CrossAccountReadOnlyRoleName:
+    Description: Name of the CrossAccountReadOnlyRole
+    Value: !Ref CrossAccountReadOnlyRole

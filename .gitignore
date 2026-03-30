@@ -1,0 +1,44 @@
+# SAM CLI build artifacts
+.aws-sam/
+
+# Python byte code (if using Lambda functions in your CFN project)
+__pycache__/
+*.py[cod]
+
+# Node dependencies (if using nested stacks or Lambda)
+node_modules/
+
+# Local environment variables/secrets files
+.env
+.env.*
+combined.parameters.json
+
+# Packaging artifacts (output from 'aws cloudformation package')
+packaged.yaml
+packaged.template
+
+# Local .terraform directories (contains providers and modules)
+**/.terraform/*
+
+# .tfstate files (Contains sensitive data and infrastructure secrets)
+*.tfstate
+*.tfstate.*
+
+# Crash log files
+crash.log
+crash.*.log
+
+# Exclude any .tfvars files (often contain sensitive input variables)
+# If you use a specific 'example.tfvars', you can commit that instead.
+*.tfvars
+*.tfvars.json
+
+# Ignore override files
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Ignore CLI configuration files
+.terraformrc
+terraform.rc

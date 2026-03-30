@@ -1,0 +1,30 @@
+[
+  {
+    "ParameterKey": "TemplateBucketName",
+    "ParameterValue": "my-cfn-templates-bucket"
+  },
+  {
+    "ParameterKey": "TemplateBucketPrefix",
+    "ParameterValue": "cloudformation/templates"
+  },
+  {
+    "ParameterKey": "TrustedAccountId",
+    "ParameterValue": "123456789012"
+  },
+  {
+    "ParameterKey": "ExternalId",
+    "ParameterValue": "REPLACE_WITH_SHARED_SECRET_MIN_8_CHARS"
+  },
+  {
+    "ParameterKey": "PasswordMinLength",
+    "ParameterValue": "14"
+  },
+  {
+    "ParameterKey": "MaxPasswordAge",
+    "ParameterValue": "90"
+  },
+  {
+    "ParameterKey": "PasswordReusePrevention",
+    "ParameterValue": "24"
+  }
+]

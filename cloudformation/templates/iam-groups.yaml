@@ -1,0 +1,206 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  AWS Baseline IAM - IAM Groups
+  Creates a standard set of IAM Groups that follow the principle of least
+  privilege.  Every group receives the EnforceMFA policy so that no human user
+  can perform actions without an active MFA session.
+ 
+  Groups created:
+    - Administrators   : Full AWS access (break-glass use only).
+    - Developers       : Power-user access minus IAM/account management.
+    - ReadOnly         : Read-only access across all services.
+    - SecurityAuditors : Security and compliance read access.
+    - BillingAdmins    : Billing and cost-management access only.
+ 
+Parameters:
+  EnforceMFAPolicyArn:
+    Type: String
+    Description: ARN of the EnforceMFA customer-managed policy.
+ 
+  DenyRootActionsPolicyArn:
+    Type: String
+    Description: ARN of the DenyRootActions customer-managed policy.
+ 
+Resources:
+ 
+  # ── 1. Administrators ─────────────────────────────────────────────────────
+  # Full AdministratorAccess — intended for a small set of break-glass accounts.
+  # MFA is mandatory; root account usage is blocked at the policy level.
+  AdminGroup:
+    Type: AWS::IAM::Group
+    Properties:
+      GroupName: Administrators
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AdministratorAccess
+        - !Ref EnforceMFAPolicyArn
+        - !Ref DenyRootActionsPolicyArn
+ 
+  # ── 2. Developers ─────────────────────────────────────────────────────────
+  # PowerUserAccess minus the ability to create/modify IAM resources or change
+  # account-level settings.  Developers can build and deploy applications but
+  # cannot escalate their own privileges.
+  DeveloperGroup:
+    Type: AWS::IAM::Group
+    Properties:
+      GroupName: Developers
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/PowerUserAccess
+        - !Ref EnforceMFAPolicyArn
+      Policies:
+        - PolicyName: DenyIAMEscalation
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # Deny IAM mutations (read-only IAM is still allowed via PowerUser)
+              - Sid: DenyIAMWrite
+                Effect: Deny
+                Action:
+                  - iam:AttachGroupPolicy
+                  - iam:AttachRolePolicy
+                  - iam:AttachUserPolicy
+                  - iam:CreateGroup
+                  - iam:CreatePolicy
+                  - iam:CreatePolicyVersion
+                  - iam:CreateRole
+                  - iam:CreateUser
+                  - iam:DeleteGroup
+                  - iam:DeletePolicy
+                  - iam:DeletePolicyVersion
+                  - iam:DeleteRole
+                  - iam:DeleteUser
+                  - iam:DetachGroupPolicy
+                  - iam:DetachRolePolicy
+                  - iam:DetachUserPolicy
+                  - iam:PutGroupPolicy
+                  - iam:PutRolePolicy
+                  - iam:PutUserPolicy
+                  - iam:UpdateAssumeRolePolicy
+                Resource: '*'
+              # Deny account-level mutations
+              - Sid: DenyAccountWrite
+                Effect: Deny
+                Action:
+                  - account:CloseAccount
+                  - account:PutAlternateContact
+                  - account:DeleteAlternateContact
+                  - organizations:LeaveOrganization
+                Resource: '*'
+ 
+  # ── 3. ReadOnly ───────────────────────────────────────────────────────────
+  # Covers all read-only data-plane and control-plane actions. Suitable for
+  # on-call engineers or business stakeholders who need visibility without
+  # the ability to make changes.
+  ReadOnlyGroup:
+    Type: AWS::IAM::Group
+    Properties:
+      GroupName: ReadOnly
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/ReadOnlyAccess
+        - !Ref EnforceMFAPolicyArn
+ 
+  # ── 4. SecurityAuditors ───────────────────────────────────────────────────
+  # Extends ReadOnly with additional access to security-relevant services:
+  # GuardDuty, SecurityHub, Inspector, Config, CloudTrail, Access Analyzer.
+  SecurityAuditGroup:
+    Type: AWS::IAM::Group
+    Properties:
+      GroupName: SecurityAuditors
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/SecurityAudit
+        - arn:aws:iam::aws:policy/AWSSecurityHubReadOnlyAccess
+        - arn:aws:iam::aws:policy/AmazonGuardDutyReadOnlyAccess
+        - arn:aws:iam::aws:policy/AWSConfigUserAccess
+        - !Ref EnforceMFAPolicyArn
+      Policies:
+        - PolicyName: SecurityAuditExtended
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: AllowSecurityServicesReadAccess
+                Effect: Allow
+                Action:
+                  - access-analyzer:List*
+                  - access-analyzer:Get*
+                  - inspector2:List*
+                  - inspector2:Get*
+                  - inspector2:Describe*
+                  - macie2:List*
+                  - macie2:Get*
+                  - macie2:Describe*
+                  - cloudtrail:Describe*
+                  - cloudtrail:Get*
+                  - cloudtrail:List*
+                  - cloudtrail:LookupEvents
+                  - logs:Describe*
+                  - logs:Filter*
+                  - logs:Get*
+                Resource: '*'
+ 
+  # ── 5. BillingAdmins ──────────────────────────────────────────────────────
+  # Scoped exclusively to billing and cost-management. Finance teams can view
+  # and manage billing without touching any workload resources.
+  BillingAdminGroup:
+    Type: AWS::IAM::Group
+    Properties:
+      GroupName: BillingAdmins
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/job-function/Billing
+        - arn:aws:iam::aws:policy/AWSBudgetsActionsWithAWSResourceControlPolicy
+        - !Ref EnforceMFAPolicyArn
+      Policies:
+        - PolicyName: CostExplorerAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: AllowCostExplorerFullAccess
+                Effect: Allow
+                Action:
+                  - ce:*
+                  - cur:DescribeReportDefinitions
+                  - cur:PutReportDefinition
+                  - cur:DeleteReportDefinition
+                  - cur:ModifyReportDefinition
+                Resource: '*'
+ 
+Outputs:
+  AdminGroupArn:
+    Description: ARN of the Administrators group
+    Value: !GetAtt AdminGroup.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-AdminGroupArn'
+ 
+  AdminGroupName:
+    Description: Name of the Administrators group
+    Value: !Ref AdminGroup
+ 
+  DeveloperGroupArn:
+    Description: ARN of the Developers group
+    Value: !GetAtt DeveloperGroup.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-DeveloperGroupArn'
+ 
+  DeveloperGroupName:
+    Description: Name of the Developers group
+    Value: !Ref DeveloperGroup
+ 
+  ReadOnlyGroupArn:
+    Description: ARN of the ReadOnly group
+    Value: !GetAtt ReadOnlyGroup.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-ReadOnlyGroupArn'
+ 
+  ReadOnlyGroupName:
+    Description: Name of the ReadOnly group
+    Value: !Ref ReadOnlyGroup
+ 
+  SecurityAuditGroupArn:
+    Description: ARN of the SecurityAuditors group
+    Value: !GetAtt SecurityAuditGroup.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-SecurityAuditGroupArn'
+ 
+  BillingAdminGroupArn:
+    Description: ARN of the BillingAdmins group
+    Value: !GetAtt BillingAdminGroup.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-BillingAdminGroupArn'
